@@ -1,46 +1,82 @@
 # Autonomous Software Engineer
 
-A repository-task platform with a FastAPI API, React dashboard, Groq-backed agents, GitHub integration, isolated validation, and human-approved draft pull requests.
+Autonomous Software Engineer is a full-stack platform for turning a software task on a GitHub repository into a proposed, tested, and reviewed code change. Its AI-assisted workflow analyzes repository context, plans edits, generates a patch, validates it in Docker, and prepares a GitHub draft pull request only after human approval.
 
-## Stack
+## Features
 
-- Backend: FastAPI, SQLAlchemy, SQLite (local) / PostgreSQL-compatible models
-- Frontend: React, TypeScript, Vite, Tailwind CSS
-- LLM: Groq Chat Completions API
-- GitHub: OAuth App or personal access token; credentials are encrypted per user
-- Validation: Docker execution container with resource limits and configurable network access
-
-## Quick start with Docker Compose
-
-1. Copy `.env.example` to `.env` and set `GROQ_API_KEY`. For GitHub OAuth, also set the OAuth App client ID/secret and use the callback URL shown in `.env.example`. A PAT can be entered in the dashboard instead.
-2. Run `docker compose up --build`.
-3. Open `http://localhost:5173`, create an account, connect GitHub, and select a repository.
-4. Create a task and run each agent stage. Validation is available after the coder produces a patch. Review and approve it before branch publishing and draft PR creation.
-
-The local development account `demo@ase.dev` / `password123` is seeded only when `ENVIRONMENT=development`. Use registration for normal development; never expose the development account publicly.
-
-The local Compose backend mounts the host Docker socket and includes the Docker CLI to launch task containers. After changing the backend image, rebuild it with `docker compose up --build`. This socket is a powerful host permission; use the setup only on a trusted development machine.
-
-## Local development
-
-- Backend: install `backend/requirements.txt`, set `GROQ_API_KEY`, then run `uvicorn app.main:app --reload` from `backend/`.
-- Frontend: run `npm install` and `npm run dev` from `frontend/`.
-- The API base can be configured with `VITE_API_URL`.
-- Docker must be available to the backend for task validation and publishing. The execution image defaults to `ase-backend:local`, built by Compose.
+- **Repository-aware task planning:** Connect a GitHub account, choose a repository, and describe a coding task. The analyzer summarizes relevant source context, and the planner produces a file-specific plan and validation checklist.
+- **Structured code changes:** The coder proposes structured file operations. The backend applies those edits to a repository snapshot and uses Git to generate the diff, so the proposed patch reflects the actual changes.
+- **Isolated validation:** Apply the patch to a separate source snapshot and run a selected command in a disposable Docker container. The runner applies resource limits and disables network access by default.
+- **AI review with human control:** A reviewer considers the patch and validation output. Users can inspect the diff and task history, then approve or reject the change; the reviewer cannot publish changes on the user's behalf.
+- **Approval-gated GitHub publishing:** After the required workflow stages and user approval, publish the patch to a task branch and open a draft pull request.
+- **Accounts and GitHub credentials:** Register and sign in, connect through a GitHub OAuth App or personal access token, and store credentials encrypted and scoped to the user.
+- **Persistent task activity:** Track workflow state, task events, logs, validation output, and generated diffs through the dashboard and API.
 
 ## Workflow
 
-1. The repository analyzer and planner read bounded GitHub source excerpts and send them with the task to Groq.
-2. The coder returns structured JSON file operations. The API applies exact edits to a repository snapshot and asks Git to generate the proposed diff; it does not invent a successful result if Groq is unavailable.
-3. Validation applies the patch to an isolated repository snapshot and runs the selected command in Docker.
-4. The Groq reviewer inspects the patch and validation output. A human must approve before the API creates a task branch and draft PR.
+```text
+Task + GitHub repository
+        ↓
+Repository analysis → Plan → Code patch → Docker validation → AI review
+                                                           ↓
+                                              User approval or rejection
+                                                           ↓
+                                       GitHub task branch + draft PR
+```
 
-Repository excerpts and task content are sent to Groq. Configure permissions and data handling accordingly. See [Security](docs/SECURITY.md) and [Deployment](docs/DEPLOYMENT.md).
+Validation failures do not count as successful runs, and the application does not publish a branch or pull request before explicit user approval. Validation may be explicitly skipped; in that case, the skip is recorded and identified in the draft pull request.
 
-## Current limits
+## Tech stack
 
-- The Docker runner is a constrained local worker, not a separately managed production worker service. Production should use a dedicated worker host, egress controls, and a hardened execution image.
-- Validation can only use tools/dependencies present in `EXECUTION_IMAGE`. The default image includes Python, pytest, Git, and Node/npm; repository-specific dependencies require a prepared image or an explicitly configured worker setup.
-- Deployment is not performed by this project setup. Production database, secrets management, monitoring, backups, and worker isolation still require environment-specific configuration.
+- **Frontend:** React, TypeScript, Vite, and Tailwind CSS
+- **Backend:** FastAPI and SQLAlchemy
+- **Database:** SQLite by default for local development; SQLAlchemy-based models
+- **AI:** Groq Chat Completions API
+- **Integrations:** GitHub OAuth/PAT, GitHub REST API, and Git
+- **Validation:** Disposable Docker containers with resource constraints
 
-See the [roadmap](docs/DEVELOPMENT_ROADMAP.md), [API documentation](docs/API_DOCUMENTATION.md), and [testing guide](docs/TESTING.md).
+## Quick start with Docker Compose
+
+1. Copy `.env.example` to `.env` and set `GROQ_API_KEY`. To use GitHub OAuth, configure the OAuth client ID and secret and the callback URL from `.env.example`. Alternatively, connect a verified PAT in the dashboard.
+2. Start the application:
+
+   ```powershell
+   docker compose up --build
+   ```
+
+3. Open `http://localhost:5173`, register an account, connect GitHub, and select a repository.
+4. Create a task and run the workflow stages. Inspect the generated diff and validation results, then approve or reject the reviewed change.
+
+The local development account `demo@ase.dev` / `password123` is seeded only when `ENVIRONMENT=development`. Use registration for normal development; never expose the development account publicly.
+
+The local Compose backend mounts the host Docker socket to launch task containers. Use this setup only on a trusted development machine. See [Security](docs/SECURITY.md) and [Deployment](docs/DEPLOYMENT.md) before configuring a deployment.
+
+## Local development
+
+- **Backend:** Install dependencies from `backend/requirements.txt`, set `GROQ_API_KEY`, and run `uvicorn app.main:app --reload` from `backend/`.
+- **Frontend:** Run `npm install` and `npm run dev` from `frontend/`.
+- Set `VITE_API_URL` to configure the frontend API base URL.
+- Docker must be available to the backend for validation and publishing. Compose builds the default execution image, `ase-backend:local`.
+
+## Testing
+
+From the repository root:
+
+```powershell
+python -m compileall -q backend\app backend\tests
+python -m pytest backend\tests -q
+Set-Location frontend
+npm run build
+```
+
+The automated backend tests mock the Groq, GitHub, and Docker API boundaries and do not require external service credentials or a running Docker daemon. See the [testing guide](docs/TESTING.md) for a manual integration check.
+
+## Documentation
+
+- [Project overview](docs/PROJECT_OVERVIEW.md)
+- [Agent workflows](docs/AGENT_WORKFLOWS.md)
+- [API documentation](docs/API_DOCUMENTATION.md)
+- [System architecture](docs/SYSTEM_ARCHITECTURE.md)
+- [Security](docs/SECURITY.md)
+- [Deployment](docs/DEPLOYMENT.md)
+- [Development roadmap](docs/DEVELOPMENT_ROADMAP.md)
