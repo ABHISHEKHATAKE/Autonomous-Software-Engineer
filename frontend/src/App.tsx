@@ -234,8 +234,11 @@ function LandingPage({ onLogin }: { onLogin: (token: string, user: User) => void
   const [password, setPassword] = useState('password123');
   const [registering, setRegistering] = useState(false);
   const [error, setError] = useState('');
+  const [existingAccount, setExistingAccount] = useState(false);
 
   const submit = async () => {
+    setError('');
+    setExistingAccount(false);
     try {
       const response = await fetch(`${API_BASE}/auth/${registering ? 'register' : 'login'}`, {
         method: 'POST',
@@ -244,6 +247,11 @@ function LandingPage({ onLogin }: { onLogin: (token: string, user: User) => void
       });
       const body = await response.json();
       if (!response.ok) {
+        if (registering && response.status === 400 && body?.detail === 'Email already registered') {
+          setError('An account with this email already exists.');
+          setExistingAccount(true);
+          return;
+        }
         throw new Error(body?.detail || 'Login failed');
       }
       onLogin(body.access_token, body.user);
@@ -280,11 +288,24 @@ function LandingPage({ onLogin }: { onLogin: (token: string, user: User) => void
             <span className="mb-2 block text-sm text-slate-300">Password</span>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white focus:border-cyan-500 focus:outline-none" />
           </label>
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {error && (
+            <div role="alert" className="space-y-2 text-sm text-red-400">
+              <p>{error}</p>
+              {existingAccount && (
+                <button
+                  type="button"
+                  onClick={() => { setRegistering(false); setError(''); setExistingAccount(false); }}
+                  className="text-cyan-300 underline hover:text-cyan-200"
+                >
+                  Sign in to your account
+                </button>
+              )}
+            </div>
+          )}
           <button onClick={() => void submit()} className="w-full rounded-xl bg-cyan-500 px-4 py-3 font-medium text-slate-950 hover:bg-cyan-400">
             {registering ? 'Create account' : 'Access control center'}
           </button>
-          <button type="button" onClick={() => { setRegistering(!registering); setError(''); }} className="w-full text-sm text-cyan-300 hover:text-cyan-200">
+          <button type="button" onClick={() => { setRegistering(!registering); setError(''); setExistingAccount(false); }} className="w-full text-sm text-cyan-300 hover:text-cyan-200">
             {registering ? 'Already have an account? Sign in' : 'Create a new account'}
           </button>
         </div>

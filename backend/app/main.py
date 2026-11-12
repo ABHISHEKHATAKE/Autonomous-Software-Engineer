@@ -2,8 +2,11 @@ import asyncio
 import hashlib
 import json
 import secrets
+import shlex
 import subprocess
 from datetime import datetime, timedelta
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
@@ -33,7 +36,7 @@ from app.github_service import (
     save_user_github_token,
     validate_github_token,
 )
-from app.llm_service import LLMConfigurationError, LLMProviderError, generate_agent_output, groq_configured, groq_model
+from app.llm_service import LLMConfigurationError, LLMProviderError, generate_agent_output, generate_validation_tests, groq_configured, groq_model
 from app.models import EventLog, GitHubOAuthState, PullRequest, Repository, Task, User
 from app.orchestrator import next_workflow_step, workflow_steps_for_task
 from app.schemas import DashboardResponse, ExecutionRequest, ExecutionResult, GitHubOAuthCallback, GitHubTokenRequest, LoginRequest, PhaseReport, PhaseStatus, PullRequestCreate, PullRequestResponse, RepositoryCreate, RepositoryIndexResponse, RepositoryResponse, RepositoryStructureResponse, TaskCreate, TaskLogResponse, TaskResponse, TokenResponse, UserCreate, UserResponse, WorkflowStatusResponse
@@ -743,6 +746,48 @@ def start_task(task_id: str, current_user: User = Depends(get_current_user), db:
     return {"status": "analyzing", "task_id": task.id}
 
 
+def _validation_source_context(workspace_root: Path, diff: str) -> str:
+    changed_paths = {
+        line[6:]
+        for line in diff.splitlines()
+        if line.startswith("+++ b/") and line[6:].lower().endswith(".py")
+    }
+    excluded_directories = {".git", ".venv", "venv", "__pycache__", "node_modules", "test", "tests"}
+    candidates = [
+        path
+        for path in workspace_root.rglob("*.py")
+        if not path.is_symlink()
+        and not any(part in excluded_directories or part.startswith(".") for part in path.relative_to(workspace_root).parts)
+        and not path.name.startswith("test_")
+        and path.stat().st_size <= 100_000
+    ]
+    candidates.sort(
+        key=lambda path: (
+            0 if path.relative_to(workspace_root).as_posix() in changed_paths else 1,
+            path.relative_to(workspace_root).as_posix(),
+        )
+    )
+
+    excerpts: list[str] = []
+    context_size = 0
+    for path in candidates:
+        relative_path = path.relative_to(workspace_root).as_posix()
+        try:
+            source = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        excerpt = f"--- {relative_path} ---\n{source[:5000]}"
+        remaining = 24_000 - context_size
+        if remaining <= 0:
+            break
+        excerpt = excerpt[:remaining]
+        excerpts.append(excerpt)
+        context_size += len(excerpt)
+    if not excerpts:
+        raise ValueError("No readable Python source files were found for temporary test generation.")
+    return "\n\n".join(excerpts)
+
+
 @app.post("/api/v1/tasks/{task_id}/execute", response_model=ExecutionResult)
 def execute_task(
     task_id: str,
@@ -821,8 +866,55 @@ def execute_task(
     except GitHubServiceError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
+    generated_tests = False
     try:
         result = run_local_command(task.id, command, cwd=workspace_root, timeout_seconds=(payload.timeout_seconds if payload else 120))
+        command_tokens = shlex.split(command)
+        is_pytest_command = (
+            any(Path(token).name in {"pytest", "pytest.exe"} for token in command_tokens)
+            or any(command_tokens[index:index + 2] == ["-m", "pytest"] for index in range(len(command_tokens) - 1))
+        )
+        if int(result["exit_code"]) == 5 and is_pytest_command:
+            try:
+                source_context = _validation_source_context(workspace_root, task.diff)
+                generated_source = generate_validation_tests(
+                    task.title,
+                    task.description,
+                    source_context,
+                    task.diff,
+                )
+            except (LLMConfigurationError, LLMProviderError, ValueError) as exc:
+                note = f"Temporary Groq test generation failed: {exc}"
+                result["stdout"] = f"{result['stdout']}\n{note}".strip()
+                result["stderr"] = f"{result['stderr']}\n{note}".strip()
+            else:
+                with NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    prefix="test_ase_generated_",
+                    suffix=".py",
+                    dir=workspace_root,
+                    delete=False,
+                ) as generated_file:
+                    generated_file.write(generated_source)
+                    generated_test_path = Path(generated_file.name)
+                generated_command = f"{command} {shlex.quote(generated_test_path.name)}"
+                try:
+                    result = run_local_command(
+                        task.id,
+                        generated_command,
+                        cwd=workspace_root,
+                        timeout_seconds=(payload.timeout_seconds if payload else 120),
+                    )
+                finally:
+                    generated_test_path.unlink(missing_ok=True)
+                command = generated_command
+                generated_tests = True
+                result["stdout"] = (
+                    "Groq generated temporary pytest tests because the repository had no collected tests. "
+                    "The tests were removed after validation and are not part of the task diff.\n"
+                    f"{result['stdout']}"
+                ).strip()
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ExecutionError as exc:
@@ -850,12 +942,17 @@ def execute_task(
     emit_task_event(
         task.id,
         "validation_completed" if result["success"] else "validation_failed",
-        f"Container validation finished with exit code {result['exit_code']}.",
+        (
+            f"Container validation with temporary Groq-generated tests finished with exit code {result['exit_code']}."
+            if generated_tests
+            else f"Container validation finished with exit code {result['exit_code']}."
+        ),
         command=command,
         exit_code=result["exit_code"],
         success=result["success"],
         stdout=result["stdout"],
         stderr=result["stderr"],
+        generated_tests=generated_tests,
         retry_count=task.retry_count,
     )
 

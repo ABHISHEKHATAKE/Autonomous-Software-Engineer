@@ -83,6 +83,17 @@ def test_health_and_login() -> None:
     assert dashboard.json()["total_tasks"] >= 0
 
 
+def test_registration_rejects_an_existing_email() -> None:
+    user = {"name": "Duplicate Test", "email": f"{uuid4()}@example.com", "password": "secure-password"}
+
+    first_registration = client.post("/api/v1/auth/register", json=user)
+    assert first_registration.status_code == 200, first_registration.text
+
+    duplicate_registration = client.post("/api/v1/auth/register", json=user)
+    assert duplicate_registration.status_code == 400
+    assert duplicate_registration.json()["detail"] == "Email already registered"
+
+
 def test_llm_config_reports_groq_status(monkeypatch) -> None:
     monkeypatch.setattr(main, "groq_configured", lambda: True)
     monkeypatch.setattr(main, "groq_model", lambda: "test-model")
@@ -393,6 +404,76 @@ def test_validation_applies_patch_and_uses_container_runner(monkeypatch, tmp_pat
     assert result.json()["success"] is True
     assert observed["cwd"].startswith(str(workspace))
     assert observed["command"] == "python --version"
+
+
+def test_validation_generates_temporary_tests_when_pytest_collects_none(monkeypatch, tmp_path) -> None:
+    token = login()
+    task_id, _ = create_task(token)
+    patch = "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-before\n+after\n"
+    set_task_state(task_id, diff=patch, status="testing", current_agent="validator")
+    workspace = tmp_path / ".workspaces"
+    monkeypatch.setattr(main, "_project_root", lambda: tmp_path)
+    monkeypatch.setattr(main, "get_user_github_token", lambda db, user_id: "github-test-token")
+
+    def fake_download(full_name, branch, github_token, destination):
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "README.md").write_text("before\n", encoding="utf-8")
+        (destination / "module.py").write_text("def add(left, right):\n    return left + right\n", encoding="utf-8")
+        return destination
+
+    monkeypatch.setattr(main, "download_repository", fake_download)
+    monkeypatch.setattr(main, "generate_validation_tests", lambda *args: "def test_add():\n    assert 1 + 1 == 2\n")
+    runs: list[tuple[str, bool]] = []
+
+    def fake_runner(task_id, command, *, cwd, timeout_seconds):
+        generated_files = list(Path(cwd).glob("test_ase_generated_*.py"))
+        runs.append((command, bool(generated_files)))
+        if len(runs) == 1:
+            return {
+                "task_id": task_id,
+                "command": command,
+                "exit_code": 5,
+                "success": False,
+                "stdout": "no tests ran",
+                "stderr": "",
+                "duration_ms": 10,
+                "working_directory": str(cwd),
+                "created_at": "2026-01-01T00:00:00",
+            }
+        assert len(generated_files) == 1
+        assert "def test_add" in generated_files[0].read_text(encoding="utf-8")
+        return {
+            "task_id": task_id,
+            "command": command,
+            "exit_code": 0,
+            "success": True,
+            "stdout": "1 passed",
+            "stderr": "",
+            "duration_ms": 10,
+            "working_directory": str(cwd),
+            "created_at": "2026-01-01T00:00:00",
+        }
+
+    monkeypatch.setattr(main, "run_local_command", fake_runner)
+    response = client.post(
+        f"/api/v1/tasks/{task_id}/execute",
+        headers=auth_headers(token),
+        json={"command": "python -m pytest -q"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["success"] is True
+    assert "Groq generated temporary pytest tests" in response.json()["stdout"]
+    assert "test_ase_generated_" in runs[1][0]
+    assert runs[0] == ("python -m pytest -q", False)
+    assert runs[1][1] is True
+    assert list(workspace.rglob("test_ase_generated_*.py")) == []
+    db = SessionLocal()
+    try:
+        task = db.query(Task).filter(Task.id == task_id).one()
+        assert task.diff == patch
+    finally:
+        db.close()
 
 
 def test_invalid_patch_fails_task_so_it_can_be_retried(monkeypatch, tmp_path) -> None:

@@ -10,4 +10,4 @@ The SQLAlchemy models currently cover:
 - `github_oauth_states`: hashed state values for the GitHub OAuth callback; callback validation enforces expiry and single use.
 - `pull_requests`: draft PR metadata associated with a task and repository.
 
-The database URL is configurable. SQLite is used for local development; PostgreSQL is recommended for a production deployment. Production deployments should configure migrations, backups, access controls, and a managed secrets/key-rotation procedure before use.
+The database URL is configurable. Direct local development defaults to SQLite; Docker Compose uses PostgreSQL with a persistent named volume. The backend uses SQLAlchemy's `create_all` during startup for initial schema creation. Production deployments should configure migrations, backups, access controls, and a managed secrets/key-rotation procedure before use.

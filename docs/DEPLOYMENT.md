@@ -2,10 +2,10 @@
 
 ## Local Compose
 
-1. Copy `.env.example` to `.env`; configure `GROQ_API_KEY`, `SECRET_KEY`, and optionally GitHub OAuth variables.
+1. Copy `.env.example` to `.env`; change `POSTGRES_PASSWORD` to a URL-safe value, configure `GROQ_API_KEY` and `SECRET_KEY`, and optionally set GitHub OAuth variables.
 2. Ensure Docker Desktop/Engine is running.
 3. Run `docker compose up --build`.
-4. Open the frontend on port 5173. SQLite data persists in the `ase-data` Compose volume.
+4. Open the frontend on port 5173. PostgreSQL data persists in the `ase-postgres-data` Compose volume. The backend waits for PostgreSQL to pass its health check before starting.
 
 The backend image is also the default execution image (`ase-backend:local`). `EXECUTION_IMAGE` can point at a custom image with project-specific tooling. The execution network defaults to `none`. Local Compose mounts the Docker socket so the API can start disposable workers; this grants the API container control over the host Docker daemon.
 

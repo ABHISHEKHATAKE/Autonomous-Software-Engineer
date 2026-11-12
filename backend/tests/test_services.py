@@ -213,6 +213,39 @@ def test_groq_completion_uses_configured_model_and_key(monkeypatch) -> None:
     assert requests[0]["headers"]["Authorization"] == "Bearer groq-test-key"
 
 
+def test_groq_generates_valid_temporary_pytest_source(monkeypatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "groq-test-key")
+    requests: list[dict] = []
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"choices": [{
+                "message": {"content": "def test_example():\n    assert 2 + 2 == 4"},
+                "finish_reason": "stop",
+            }]}
+
+    def fake_post(url, **kwargs):
+        requests.append(kwargs)
+        return Response()
+
+    monkeypatch.setattr(llm_service.httpx, "post", fake_post)
+    result = llm_service.generate_validation_tests(
+        "Add a feature",
+        "Implement a small utility.",
+        "--- module.py ---\ndef add(left, right):\n    return left + right\n",
+        "diff summary",
+    )
+
+    assert result == "def test_example():\n    assert 2 + 2 == 4\n"
+    assert requests[0]["json"]["max_tokens"] == llm_service.MAX_OUTPUT_TOKENS["test_generator"]
+    assert "temporary and discarded" in requests[0]["json"]["messages"][0]["content"]
+
+
 def test_groq_completion_retries_after_rate_limit_wait(monkeypatch) -> None:
     monkeypatch.setenv("GROQ_API_KEY", "groq-test-key")
     responses = [
@@ -345,6 +378,25 @@ def test_coder_edit_parser_rejects_missing_search_text() -> None:
         llm_service._parse_coder_edits(
             '{"files":[{"path":"main.cpp","action":"edit","edits":[{"search":"","replace":"new"}]}]}'
         )
+
+
+def test_generated_test_parser_accepts_pytest_source() -> None:
+    source = llm_service._parse_generated_tests("```python\n\ndef test_example():\n    assert 1 == 1\n```")
+    assert source == "\ndef test_example():\n    assert 1 == 1\n".lstrip()
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ("not valid Python", "invalid Python"),
+        ("value = 1", "at least one pytest test function"),
+        ("import subprocess\ndef test_example():\n    assert True", "module that is not allowed"),
+        ("def test_example():\n    eval('1 + 1')", "call that is not allowed"),
+    ],
+)
+def test_generated_test_parser_rejects_invalid_or_unsafe_source(source: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        llm_service._parse_generated_tests(source)
 
 
 def test_groq_completion_reports_missing_api_key(monkeypatch) -> None:

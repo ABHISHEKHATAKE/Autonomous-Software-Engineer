@@ -30,14 +30,14 @@ Validation failures do not count as successful runs, and the application does no
 
 - **Frontend:** React, TypeScript, Vite, and Tailwind CSS
 - **Backend:** FastAPI and SQLAlchemy
-- **Database:** SQLite by default for local development; SQLAlchemy-based models
+- **Database:** PostgreSQL in Docker Compose; SQLite by default for direct local development
 - **AI:** Groq Chat Completions API
 - **Integrations:** GitHub OAuth/PAT, GitHub REST API, and Git
 - **Validation:** Disposable Docker containers with resource constraints
 
 ## Quick start with Docker Compose
 
-1. Copy `.env.example` to `.env` and set `GROQ_API_KEY`. To use GitHub OAuth, configure the OAuth client ID and secret and the callback URL from `.env.example`. Alternatively, connect a verified PAT in the dashboard.
+1. Copy `.env.example` to `.env`, change `POSTGRES_PASSWORD` to a URL-safe value, and set `GROQ_API_KEY`. To use GitHub OAuth, configure the OAuth client ID and secret and the callback URL from `.env.example`. Alternatively, connect a verified PAT in the dashboard.
 2. Start the application:
 
    ```powershell
@@ -53,7 +53,7 @@ The local Compose backend mounts the host Docker socket to launch task container
 
 ## Local development
 
-- **Backend:** Install dependencies from `backend/requirements.txt`, set `GROQ_API_KEY`, and run `uvicorn app.main:app --reload` from `backend/`.
+- **Backend:** Install dependencies from `backend/requirements.txt`, set `GROQ_API_KEY`, and run `uvicorn app.main:app --reload` from `backend/`. Direct local development uses SQLite by default; set `DATABASE_URL` to a PostgreSQL connection URL to use PostgreSQL instead.
 - **Frontend:** Run `npm install` and `npm run dev` from `frontend/`.
 - Set `VITE_API_URL` to configure the frontend API base URL.
 - Docker must be available to the backend for validation and publishing. Compose builds the default execution image, `ase-backend:local`.
